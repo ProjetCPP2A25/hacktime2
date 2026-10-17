@@ -1,9 +1,11 @@
 #include "hackathon.h"
 #include "login.h"
+#include "participants/connection.h"
 
 #include <QApplication>
 #include <QFile>
 #include <QIcon>
+#include <QMessageBox>
 #include <QTextStream>
 
 int main(int argc, char *argv[])
@@ -16,6 +18,13 @@ int main(int argc, char *argv[])
         QTextStream ts(&f);
         a.setStyleSheet(ts.readAll());
     }
+
+    // connexion à la base Oracle (paramètres dans participants/connection.cpp)
+    Connection c;
+    if (c.createconnect())
+        QMessageBox::information(nullptr, "Base de données", "Connexion réussie.");
+    else
+        QMessageBox::critical(nullptr, "Base de données", "Connexion échouée :\n" + c.lastError());
 
     Login login;
     hackathon HT;

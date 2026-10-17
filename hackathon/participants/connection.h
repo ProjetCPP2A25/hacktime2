@@ -13,6 +13,7 @@ private:
 public:
     Connection();
     bool createconnect();
+    QString lastError() const;
     void closeConnection();
 };
 

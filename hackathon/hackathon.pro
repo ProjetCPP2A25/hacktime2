@@ -15,6 +15,7 @@ msvc: QMAKE_CXXFLAGS += /utf-8
 
 SOURCES += \
     main.cpp \
+    crudcompetition.cpp \
     hackathon.cpp \
     pdfexport.cpp \
     participants/connection.cpp \
@@ -24,6 +25,7 @@ SOURCES += \
 HEADERS += \
     calendarview.h \
     competition.h \
+    crudcompetition.h \
     hackathon.h \
     pdfexport.h \
     planning.h \

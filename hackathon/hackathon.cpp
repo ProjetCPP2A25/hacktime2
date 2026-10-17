@@ -1,7 +1,7 @@
 // HackTime - projet d'intégration. Pour l'instant : module Gestion des compétitions.
 // Les widgets sont dans hackathon.ui (Qt Designer) et les couleurs dans style.qss
 // (chargé dans main.cpp) ; ce fichier contient la logique.
-// Les données sont sauvegardées dans competitions.json (à côté de l'exécutable).
+// Les compétitions sont enregistrées dans la base Oracle (classe Competition, crudcompetition.cpp).
 
 #include "hackathon.h"
 #include "ui_hackathon.h"
@@ -12,6 +12,7 @@
 #include "statschart.h"
 #include "planning.h"
 #include "xlsxwriter.h"
+#include "crudcompetition.h"
 
 #include <QCoreApplication>
 #include <QGuiApplication>
@@ -47,88 +48,113 @@
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QSqlError>
+#include <QSqlQuery>
+#include <QDebug>
+#include <QMap>
 #include <QStandardPaths>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
 
 // ---------------------------------------------------------------- Données
-static QString dataPath() {
-    return QCoreApplication::applicationDirPath() + "/competitions.json";
+// Les compétitions sont enregistrées dans la base Oracle (table COMPETITION),
+// à travers la classe Competition (crudcompetition.h/.cpp).
+// Le jury et les sponsors iront dans les tables d'association JUGER et SPONSORISER
+// quand les modules Employés et Sponsors seront en place ; en attendant, ils sont gardés
+// dans competitions_extra.json, à côté de l'exécutable, avec l'ID de la compétition.
+
+static QString extraPath() {
+    return QCoreApplication::applicationDirPath() + "/competitions_extra.json";
 }
 
-static QVector<Comp> defaultData() {
-    auto mk = [](const char *id, const char *nom, const char *th, const char *d, const char *f,
-                 const char *mode, int max, const char *st, const char *salle, const char *jury,
-                 const char *desc, const char *sponsors) {
-        Comp c;
-        c.id = id; c.nom = QString::fromUtf8(nom); c.theme = QString::fromUtf8(th);
-        c.debut = d; c.fin = f; c.mode = QString::fromUtf8(mode); c.max = max;
-        c.statut = QString::fromUtf8(st);
-        c.salle = QString::fromUtf8(salle); c.jury = QString::fromUtf8(jury);
-        c.description = QString::fromUtf8(desc);
-        c.sponsors = QString::fromUtf8(sponsors);
-        return c;
-    };
-    return {
-        mk("C-001", "Hack for a Better Future", "Environnement", "12/05/2025", "14/05/2025", "Présentiel", 5, "Planifiée", "Amphi 1", "Dr. Sami Ben Ali, Mme Leila Trabelsi",
-           "Trois jours pour imaginer des solutions numériques qui réduisent les déchets et l'empreinte carbone de la ville.", "TechNova, GreenBank"),
-        mk("C-002", "HealthTech Innovation", "Santé", "20/05/2025", "22/05/2025", "Hybride", 4, "En cours", "Lab Innovation", "Dr. Sami Ben Ali, M. Karim Jaziri",
-           "Applications de suivi des patients et outils d'aide au diagnostic, sur place ou à distance.", "MedLink, DataWave"),
-        mk("C-003", "EduTech Solutions", "Éducation", "28/04/2025", "30/04/2025", "Présentiel", 6, "Terminée", "Amphi 1", "Mme Nour Gharbi",
-           "Des outils pour rendre l'apprentissage plus accessible aux élèves et aux enseignants.", "EduPlus, TechNova"),
-        mk("C-004", "Smart City Challenge", "Ville intelligente", "10/06/2025", "12/06/2025", "Présentiel", 5, "Planifiée", "Salle B", "M. Karim Jaziri, Mme Nour Gharbi",
-           "Mobilité, énergie et services urbains connectés pour une ville plus intelligente.", "CloudPeak, GreenBank, DataWave"),
-        mk("C-005", "AgriTech for Tomorrow", "Agriculture", "18/06/2025", "20/06/2025", "En ligne", 3, "En cours", "", "Mme Leila Trabelsi",
-           "Capteurs et données au service d'une agriculture plus durable, 100 % à distance.", "AgriSmart, GreenBank"),
-        mk("C-006", "AI for Good", "Intelligence artificielle", "25/03/2025", "27/03/2025", "En ligne", 4, "Terminée", "", "Dr. Sami Ben Ali",
-           "Des projets d'intelligence artificielle à impact social positif.", "DataWave, CloudPeak"),
-        mk("C-007", "Web & Mobile Dev", "Développement", "15/07/2025", "17/07/2025", "Hybride", 5, "Planifiée", "Lab Innovation", "M. Youssef Hamdi",
-           "Concevoir une application web ou mobile utile aux étudiants.", "TechNova, CloudPeak"),
-        mk("C-008", "FinTech Hack", "Finance", "22/07/2025", "24/07/2025", "Présentiel", 6, "Planifiée", "Amphi 2", "M. Youssef Hamdi, Mme Leila Trabelsi",
-           "Paiement, épargne et inclusion financière : réinventer les services bancaires.", "FinUp, GreenBank"),
-    };
+static QJsonObject loadExtras() {
+    QFile f(extraPath());
+    if (!f.open(QIODevice::ReadOnly)) return QJsonObject();
+    return QJsonDocument::fromJson(f.readAll()).object();
 }
 
-static QVector<Comp> loadData() {
-    QFile f(dataPath());
-    if (f.open(QIODevice::ReadOnly)) {
-        QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-        if (doc.isArray()) {
-            QVector<Comp> out;
-            const QJsonArray arr = doc.array();
-            for (const QJsonValue &v : arr) {
-                QJsonObject o = v.toObject();
-                Comp c;
-                c.id = o["id"].toString(); c.nom = o["nom"].toString();
-                c.theme = o["theme"].toString(); c.debut = o["debut"].toString();
-                c.fin = o["fin"].toString(); c.mode = o["mode"].toString();
-                c.max = o["max"].toInt(); c.statut = o["statut"].toString();
-                c.salle = o["salle"].toString(); c.jury = o["jury"].toString();
-                c.description = o["description"].toString();
-                c.sponsors = o["sponsors"].toString();
-                if (!MODES.contains(c.mode)) c.mode = MODES.first();  // anciens fichiers : Équipes/Individuel
-                out.append(c);
-            }
-            return out;
-        }
-    }
-    return defaultData();
-}
-
-static void saveData(const QVector<Comp> &data) {
-    QJsonArray arr;
+static void saveExtras(const QVector<Comp> &data) {
+    QJsonObject all;
     for (const Comp &c : data) {
         QJsonObject o;
-        o["id"] = c.id; o["nom"] = c.nom; o["theme"] = c.theme; o["debut"] = c.debut;
-        o["fin"] = c.fin; o["mode"] = c.mode; o["max"] = c.max; o["statut"] = c.statut;
-        o["salle"] = c.salle; o["jury"] = c.jury; o["description"] = c.description;
+        o["jury"] = c.jury;
         o["sponsors"] = c.sponsors;
-        arr.append(o);
+        all[c.id] = o;
     }
-    QFile f(dataPath());
+    QFile f(extraPath());
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        f.write(QJsonDocument(arr).toJson());
+        f.write(QJsonDocument(all).toJson());
+}
+
+// SALLE : nom -> ID (la salle est créée si elle n'existe pas encore)
+static int salleId(const QString &nomSalle) {
+    const QString nom = nomSalle.simplified();
+    if (nom.isEmpty()) return 0;
+    QSqlQuery find;
+    find.prepare("SELECT ID_SALLE FROM SALLE WHERE UPPER(NOM_SALLE) = UPPER(:nom)");
+    find.bindValue(":nom", nom);
+    if (find.exec() && find.next()) return find.value(0).toInt();
+
+    QSqlQuery ins;  // ID rempli par le trigger de la table
+    ins.prepare("INSERT INTO SALLE (NOM_SALLE, CAPACITE) VALUES (:nom, 50)");
+    ins.bindValue(":nom", nom);
+    if (!ins.exec()) {  // pas de trigger : plus grand ID + 1
+        QSqlQuery mx("SELECT NVL(MAX(ID_SALLE), 0) + 1 FROM SALLE");
+        if (!mx.next()) return 0;
+        QSqlQuery ins2;
+        ins2.prepare("INSERT INTO SALLE (ID_SALLE, NOM_SALLE, CAPACITE) VALUES (:id, :nom, 50)");
+        ins2.bindValue(":id", mx.value(0).toInt());
+        ins2.bindValue(":nom", nom);
+        if (!ins2.exec()) {
+            qDebug() << "Salle non créée :" << ins2.lastError().text();
+            return 0;
+        }
+    }
+    if (find.exec() && find.next()) return find.value(0).toInt();
+    return 0;
+}
+
+// SALLE : ID -> nom
+static QMap<int, QString> sallesParId() {
+    QMap<int, QString> out;
+    QSqlQuery q("SELECT ID_SALLE, NOM_SALLE FROM SALLE");
+    while (q.next()) out.insert(q.value(0).toInt(), q.value(1).toString());
+    return out;
+}
+
+// compétition de l'interface -> entité de la base
+static Competition toEntity(const Comp &c) {
+    Competition e(c.nom, c.theme, QDate::fromString(c.debut, DATE_FMT),
+                  QDate::fromString(c.fin, DATE_FMT), c.mode, c.max, c.statut, c.description,
+                  c.mode == "En ligne" ? 0 : salleId(c.salle));
+    e.setId(c.id.toInt());
+    return e;
+}
+
+// lecture de toutes les compétitions dans la base
+static QVector<Comp> loadData() {
+    const QMap<int, QString> salles = sallesParId();
+    const QJsonObject extras = loadExtras();
+    QVector<Comp> out;
+    for (const Competition &e : Competition::lister()) {
+        Comp c;
+        c.id = QString::number(e.getId());
+        c.nom = e.getNom();
+        c.theme = e.getTheme();
+        c.debut = e.getDateDebut().toString(DATE_FMT);
+        c.fin = e.getDateFin().toString(DATE_FMT);
+        c.mode = e.getMode();
+        c.max = e.getMaxEquipes();
+        c.statut = e.getStatut();
+        c.description = e.getDescription();
+        c.salle = salles.value(e.getIdSalle());
+        const QJsonObject x = extras.value(c.id).toObject();
+        c.jury = x.value("jury").toString();
+        c.sponsors = x.value("sponsors").toString();
+        out.append(c);
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------- Vérification du planning
@@ -177,7 +203,7 @@ public:
         fin = new QDateEdit(QDate::fromString(comp.fin, DATE_FMT)); fin->setCalendarPopup(true);
         debut->setDisplayFormat(DATE_FMT); fin->setDisplayFormat(DATE_FMT);
         mode = new QComboBox; mode->addItems(MODES); mode->setCurrentText(comp.mode);
-        max = new QSpinBox; max->setRange(1, 999); max->setValue(comp.max);
+        max = new QSpinBox; max->setRange(1, 50); max->setValue(comp.max);
         statut = new QComboBox; statut->addItems(STATUTS); statut->setCurrentText(comp.statut);
         salle = new QComboBox; salle->setEditable(true); salle->addItems(SALLES); salle->setCurrentText(comp.salle);
         jury = new QLineEdit(comp.jury); jury->setPlaceholderText("Noms séparés par des virgules");
@@ -526,12 +552,7 @@ void hackathon::setupAddForm() {
 
 // ---------------------------------------------------------------- Utilitaires
 QString hackathon::nextId() const {
-    int mx = 0;
-    for (const Comp &c : data) {
-        QStringList p = c.id.split('-');
-        if (p.size() == 2) mx = std::max(mx, p[1].toInt());
-    }
-    return QString("C-%1").arg(mx + 1, 3, 10, QChar('0'));
+    return "Auto";  // l'ID est donné par Oracle (séquence + trigger) à l'enregistrement
 }
 
 int hackathon::indexOf(const QString &id) const {
@@ -665,11 +686,25 @@ void hackathon::submitAddForm() {
         showAddError("La date de fin doit être après la date de début.");
         return;
     }
-    const Comp c = formComp();
+    Comp c = formComp();
     if (!confirmPlanning(this, c, data)) return;  // conflits de planning (dates, salle, jury)
 
+    // ajout dans la base Oracle
+    Competition e = toEntity(c);
+    const QString err = e.verifier();
+    if (!err.isEmpty()) {
+        showAddError(err);
+        return;
+    }
+    if (!e.ajouter()) {
+        QMessageBox::critical(this, "Ajout", "La compétition n'a pas été ajoutée :\n" +
+                                                 Competition::derniereErreur());
+        return;
+    }
+    c.id = QString::number(e.getId());
     data.append(c);
-    saveData(data);
+    saveExtras(data);
+    QMessageBox::information(this, "Ajout", QString("Compétition « %1 » ajoutée.").arg(c.nom));
     selectedId = c.id;
     resetFilters();
     page = (int(data.size()) - 1) / PER_PAGE;  // aller à la page du nouvel élément
@@ -684,8 +719,20 @@ void hackathon::editCompetition(const QString &id) {
     if (i < 0) return;
     CompetitionDialog dlg(this, data[i], data);
     if (dlg.exec() == QDialog::Accepted) {
-        data[i] = dlg.result();
-        saveData(data);
+        const Comp c = dlg.result();
+        Competition e = toEntity(c);
+        const QString err = e.verifier();
+        if (!err.isEmpty()) {
+            QMessageBox::warning(this, "Modifier", err);
+            return;
+        }
+        if (!e.modifier()) {
+            QMessageBox::critical(this, "Modifier", "La compétition n'a pas été modifiée :\n" +
+                                                        Competition::derniereErreur());
+            return;
+        }
+        data[i] = c;
+        saveExtras(data);
         refresh();
     }
 }
@@ -697,8 +744,13 @@ void hackathon::deleteCompetition(const QString &id) {
     auto r = QMessageBox::question(this, "Supprimer",
                 QString("Supprimer la compétition « %1 » ?").arg(data[i].nom));
     if (r == QMessageBox::Yes) {
+        if (!Competition::supprimer(id.toInt())) {
+            QMessageBox::critical(this, "Supprimer", "La compétition n'a pas été supprimée :\n" +
+                                                         Competition::derniereErreur());
+            return;
+        }
         data.remove(i);
-        saveData(data);
+        saveExtras(data);
         if (selectedId == id) selectedId = data.isEmpty() ? QString() : data.first().id;
         refresh();
     }
