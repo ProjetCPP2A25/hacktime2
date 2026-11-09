@@ -1,31 +1,25 @@
+#include "hacktime.h"
 #include "connection.h"
-#include "interface.h"
 
 #include <QApplication>
-#include <QFile>
 #include <QIcon>
 #include <QMessageBox>
 
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
+    a.setApplicationName("HackTime");
+    a.setStyle("Fusion");   // même rendu pour tous les modules
+    a.setWindowIcon(QIcon(":/images/icon.png"));
 
-    // couleurs de l'application (style.qss dans les ressources)
-    QFile qss(":/style.qss");
-    if (qss.open(QFile::ReadOnly))
-        a.setStyleSheet(QString::fromUtf8(qss.readAll()));
-
-    // connexion à la base Oracle : instance unique (Singleton)
+    // connexion commune à la base Oracle (classe Connection, Singleton)
     Connection &c = Connection::createInstance();
     if (c.createConnection())
         QMessageBox::information(nullptr, "Base de données", "Connexion réussie.");
     else
-        QMessageBox::critical(nullptr, "Base de données",
-                              "Échec de la connexion :\n" + c.lastError());
+        QMessageBox::critical(nullptr, "Base de données", "Échec de la connexion :\n" + c.lastError());
 
-    // une seule fenêtre : la page de connexion, puis la gestion des compétitions
-    Gcompetition w;
-    w.setWindowIcon(QIcon(":/images/icon.png"));
+    HackTime w;
     w.show();
     return a.exec();
 }

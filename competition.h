@@ -51,6 +51,7 @@ public:
     QSqlQueryModel *afficher();              // SELECT, pour un QTableView
     bool modifier();                         // UPDATE selon l'ID
     static bool supprimer(int id);           // DELETE
+    static bool nomExiste(const QString &nom, int idExclu = 0);   // nom déjà utilisé ?
     static QVector<Competition> lister();    // SELECT, pour remplir le tableau de l'interface
     static QString derniereErreur();         // message Oracle de la dernière erreur
 

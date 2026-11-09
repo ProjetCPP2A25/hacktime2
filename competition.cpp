@@ -1,6 +1,7 @@
 #include "competition.h"
 
 #include <QDebug>
+#include <QRegularExpression>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QVariant>
@@ -60,6 +61,11 @@ QString Competition::verifier() const
 {
     if (nom.trimmed().isEmpty()) return "Le nom de la compétition est obligatoire.";
     if (nom.length() > 100) return "Le nom ne doit pas dépasser 100 caractères.";
+    // lettres seulement (accents acceptés), avec espaces, tirets et apostrophes entre les mots
+    static const QRegularExpression lettres("^[\\p{L}]+([ '\\-][\\p{L}]+)*$");
+    if (!lettres.match(nom.simplified()).hasMatch())
+        return "Le nom doit contenir uniquement des lettres (pas de chiffres ni de symboles).";
+    if (nomExiste(nom, id)) return "Une compétition porte déjà ce nom. Choisissez un autre nom.";
     if (theme.trimmed().isEmpty()) return "Le thème est obligatoire.";
     if (!dateDebut.isValid() || !dateFin.isValid()) return "Les dates sont obligatoires.";
     if (dateFin < dateDebut) return "La date de fin doit être après la date de début.";
@@ -70,12 +76,22 @@ QString Competition::verifier() const
 // ------------------------------------------------------------- CRUD
 bool Competition::ajouter()
 {
-    // ID_COMPETITION est rempli par la séquence + le trigger de la table
+    // Nouvel ID = plus grand ID + 1, calculé ici.
+    // (On ne dépend pas de la séquence : si elle est en retard sur les données,
+    //  Oracle donnerait un ID déjà utilisé -> erreur ORA-00001.)
+    QSqlQuery max("SELECT NVL(MAX(ID_COMPETITION), 0) + 1 FROM COMPETITION");
+    if (!max.next()) {
+        lastError = max.lastError().text();
+        return false;
+    }
+    id = max.value(0).toInt();
+
     QSqlQuery query;
-    query.prepare("INSERT INTO COMPETITION (NOM, THEME, DATE_DEBUT, DATE_FIN, NB_MAX_MEMBRES, "
-                  "STATUT, MODE_COMP) "
-                  "VALUES (:nom, :theme, :debut, :fin, :max, :statut, :mode)");
-    query.bindValue(":nom", nom.trimmed());
+    query.prepare("INSERT INTO COMPETITION (ID_COMPETITION, NOM, THEME, DATE_DEBUT, DATE_FIN, "
+                  "NB_MAX_MEMBRES, STATUT, MODE_COMP) "
+                  "VALUES (:id, :nom, :theme, :debut, :fin, :max, :statut, :mode)");
+    query.bindValue(":id", id);
+    query.bindValue(":nom", nom.simplified());
     query.bindValue(":theme", theme);
     query.bindValue(":debut", dateDebut);
     query.bindValue(":fin", dateFin);
@@ -84,13 +100,11 @@ bool Competition::ajouter()
     query.bindValue(":mode", modeVersCode(mode));
     if (!executer(query, "Ajout")) return false;
 
-    QSqlQuery last("SELECT MAX(ID_COMPETITION) FROM COMPETITION");
-    if (last.next()) id = last.value(0).toInt();
-
     // association « gerer » : la compétition est gérée par l'administrateur (premier employé)
+    // (rien n'est ajouté si la table EMPLOYE est vide)
     QSqlQuery gerer;
     gerer.prepare("INSERT INTO GERER (ID_EMPLOYE, ID_COMPETITION) "
-                  "SELECT MIN(ID_EMPLOYE), :id FROM EMPLOYE");
+                  "SELECT MIN(ID_EMPLOYE), :id FROM EMPLOYE HAVING MIN(ID_EMPLOYE) IS NOT NULL");
     gerer.bindValue(":id", id);
     return executer(gerer, "Ajout dans GERER");
 }
@@ -130,6 +144,18 @@ bool Competition::supprimer(int id)
     query.prepare("DELETE FROM COMPETITION WHERE ID_COMPETITION = :id");
     query.bindValue(":id", id);
     return executer(query, "Suppression");
+}
+
+// nom unique : même nom sans tenir compte des majuscules ni des espaces en trop.
+// idExclu = la compétition en cours de modification (elle peut garder son nom).
+bool Competition::nomExiste(const QString &nom, int idExclu)
+{
+    QSqlQuery query;
+    query.prepare("SELECT COUNT(*) FROM COMPETITION "
+                  "WHERE UPPER(TRIM(NOM)) = UPPER(:nom) AND ID_COMPETITION <> :id");
+    query.bindValue(":nom", nom.simplified());
+    query.bindValue(":id", idExclu);
+    return query.exec() && query.next() && query.value(0).toInt() > 0;
 }
 
 QVector<Competition> Competition::lister()
